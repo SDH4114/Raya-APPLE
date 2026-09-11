@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_URL="${RAYA_REPO_URL:-https://github.com/SDH4114/Raya-APPLE.git}"
 REPO_REF="${RAYA_REPO_REF:-prime}"
 NODE_MAJOR="${RAYA_NODE_MAJOR:-22}"
+NVM_COMMIT="977563e97ddc66facf3a8e31c6cff01d236f09bd"
+NVM_INSTALL_SHA256="2d8359a64a3cb07c02389ad88ceecd43f2fa469c06104f92f98df5b6f315275f"
 raya_state_dir="${RAYA_HOME:-$HOME/.raya}"
 preserve_raya_state=0
 raya_was_installed=0
@@ -47,7 +49,20 @@ if [ "$need_node" -eq 1 ]; then
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   if [ ! -s "$NVM_DIR/nvm.sh" ]; then
     echo "Installing nvm..."
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+    nvm_installer="$(mktemp)"
+    curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_COMMIT/install.sh" -o "$nvm_installer"
+    if command -v sha256sum >/dev/null 2>&1; then
+      nvm_digest="$(sha256sum "$nvm_installer" | awk '{print $1}')"
+    else
+      nvm_digest="$(shasum -a 256 "$nvm_installer" | awk '{print $1}')"
+    fi
+    if [ "$nvm_digest" != "$NVM_INSTALL_SHA256" ]; then
+      rm -f "$nvm_installer"
+      echo "nvm installer checksum verification failed." >&2
+      exit 1
+    fi
+    NVM_INSTALL_VERSION="$NVM_COMMIT" bash "$nvm_installer"
+    rm -f "$nvm_installer"
   fi
 
   # shellcheck disable=SC1091
@@ -127,7 +142,7 @@ else
 fi
 
 cd "$tmpdir/raya"
-npm ci
+npm ci --ignore-scripts
 npm run build
 # Installing a directory globally can create a link back to this temporary
 # checkout. Install the packed archive instead, because the checkout is removed
@@ -188,7 +203,7 @@ if [ "$legacy_update_checkpoint" -eq 1 ]; then
   export RAYA_UPDATE_CHECKPOINT_CREATED=1
 fi
 
-npm install -g "$tmpdir/$package_tarball"
+npm install -g --ignore-scripts "$tmpdir/$package_tarball"
 
 npm_global_bin="$(npm prefix -g)/bin"
 raya_executable="$npm_global_bin/raya"

@@ -131,7 +131,8 @@ test("installer has a legacy-client checkpoint bridge before replacement", () =>
   assert.match(installer, /npm pack --ignore-scripts --pack-destination "\$checkpoint"/);
   assert.match(installer, /mv "\$checkpoint\/\$old_archive" "\$checkpoint\/raya-package\.tgz"/);
   assert.match(installer, /export RAYA_UPDATE_CHECKPOINT_CREATED=1/);
-  assert.match(installer, /npm install -g "\$tmpdir\/\$package_tarball"/);
+  assert.match(installer, /npm install -g --ignore-scripts "\$tmpdir\/\$package_tarball"/);
+  assert.match(installer, /NVM_INSTALL_SHA256/);
 });
 
 test("checkpoint failure makes installer execution unreachable", async () => {

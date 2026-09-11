@@ -11,7 +11,7 @@ import { createSkillAuthoringTool } from "./skill-authoring.js";
 import { createSessionsTool } from "./sessions.js";
 
 export function createDefaultTools(config: RayaConfig, policy: ToolExecutionPolicy = {}, workspace = process.cwd()): RayaTool[] {
-  const tools: RayaTool[] = [createListFilesTool(workspace), createReadFileTool(workspace), createShellTool(config, policy, workspace), createWebTool(config), createMemoryTool(config.activeProfile), createSessionsTool(config.activeProfile), createScheduleTool(), createUseSkillTool()];
+  const tools: RayaTool[] = [createListFilesTool(workspace), createReadFileTool(workspace), createShellTool(config, policy, workspace), createWebTool(config), createMemoryTool(config.activeProfile, policy), createSessionsTool(config.activeProfile), createScheduleTool(policy), createUseSkillTool()];
   if (config.mode === "build") {
     tools.push(createWriteFileTool(policy, workspace), createAppControlTool(policy), createSkillAuthoringTool(policy));
   }

@@ -2,7 +2,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { spawn } from "node:child_process";
 import type { RayaConfig } from "../config/config.js";
 import { defaultShell } from "../platform.js";
-import type { RayaTool, ToolExecutionPolicy } from "../types/tool.js";
+import { requireToolApproval, type RayaTool, type ToolExecutionPolicy } from "../types/tool.js";
 
 const ShellParameters = Type.Object({
   command: Type.String({
@@ -93,34 +93,70 @@ function shellSegments(command: string): string[] {
 function stripExecutionPrefixes(segment: string): string {
   let value = segment.trim();
   value = value.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+/, "");
-  value = value.replace(/^(?:(?:sudo|command|builtin|nohup)\s+)+/, "");
+  value = value.replace(/^(?:(?:sudo|command)(?:\s+-\S+)*|builtin|nohup)\s+/, "");
   if (value.startsWith("env ")) {
-    value = value.slice(4).replace(/^(?:(?:-[A-Za-z]+|[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*/, "");
+    value = value.slice(4).replace(/^(?:(?:--|-[A-Za-z]+|[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*/, "");
   }
   return value;
 }
 
-function matchesCommandPrefix(command: string, prefix: string): boolean {
+function matchesLiteralPrefix(command: string, prefix: string): boolean {
+  const raw = command.trim();
+  const candidate = prefix.trim();
+  return Boolean(candidate) && (raw === candidate || raw.startsWith(`${candidate} `));
+}
+
+function normalizeExecutable(value: string): string {
+  const unquoted = value.trim().replace(/^(['"])(.*)\1$/, "$2").replaceAll("^", "");
+  return unquoted.split(/[\\/]/).at(-1) ?? unquoted;
+}
+
+function matchesBlockedPrefix(command: string, prefix: string): boolean {
   const raw = command.trim();
   const [program = "", ...args] = raw.split(/\s+/);
-  const normalized = [program.split(/[\\/]/).at(-1) ?? program, ...args].join(" ");
-  const candidate = prefix.trim();
-  return Boolean(candidate) && (raw === candidate || raw.startsWith(`${candidate} `) || normalized === candidate || normalized.startsWith(`${candidate} `));
+  const normalized = [normalizeExecutable(program), ...args].join(" ");
+  return matchesLiteralPrefix(raw, prefix) || matchesLiteralPrefix(normalized, prefix);
 }
 
 export function commandMatchesAutoApprovePrefix(command: string, prefix: string): boolean {
-  return !SHELL_CONTROL.test(command) && matchesCommandPrefix(command, prefix);
+  return !SHELL_CONTROL.test(command) && matchesLiteralPrefix(command, prefix);
 }
 
 export function assertNotBlocked(command: string, blockedCommands: string[]): void {
-  const segments = shellSegments(command);
-  const blocked = blockedCommands.find((entry) => segments.some((segment) => {
-    const executable = stripExecutionPrefixes(segment);
-    if (matchesCommandPrefix(executable, entry)) return true;
-    const execTarget = executable.match(/(?:^|\s)-(?:exec|execdir|ok|okdir)\s+([^\s]+)/)?.[1];
-    const xargsTarget = executable.match(/(?:^|\s)xargs(?:\s+-\S+)*\s+([^\s]+)/)?.[1];
-    return matchesCommandPrefix(execTarget ?? "", entry) || matchesCommandPrefix(xargsTarget ?? "", entry);
-  }));
+  const inspect = (candidate: string, depth = 0): string | undefined => {
+    if (depth > 4) return blockedCommands[0];
+    const segments = shellSegments(candidate);
+    return blockedCommands.find((entry) => segments.some((segment) => {
+      const rawTokens = segment.trim().split(/\s+/);
+      const leadingWrapper = normalizeExecutable(rawTokens[0] ?? "").toLowerCase();
+      if (["sudo", "env", "command", "builtin", "nohup"].includes(leadingWrapper)
+        && rawTokens.slice(1).some((token) => matchesBlockedPrefix(token, entry))) return true;
+      const executable = stripExecutionPrefixes(segment);
+      if (matchesBlockedPrefix(executable, entry)) return true;
+      const execTarget = executable.match(/(?:^|\s)-(?:exec|execdir|ok|okdir)\s+([^\s]+)/)?.[1];
+      const xargsTarget = executable.match(/(?:^|\s)xargs(?:\s+-\S+)*\s+([^\s]+)/)?.[1];
+      if (matchesBlockedPrefix(execTarget ?? "", entry) || matchesBlockedPrefix(xargsTarget ?? "", entry)) return true;
+
+      const [program = ""] = executable.split(/\s+/, 1);
+      const wrapper = normalizeExecutable(program).toLowerCase();
+      const rest = executable.slice(program.length).trim();
+      if (["bash", "sh", "zsh", "dash", "ksh"].includes(wrapper)) {
+        const nested = rest.match(/(?:^|\s)-(?:[a-z]*c[a-z]*)\s+([\s\S]+)$/i)?.[1];
+        if (nested && inspect(nested.replace(/^(['"])([\s\S]*)\1$/, "$2"), depth + 1)) return true;
+      }
+      if (wrapper === "cmd" || wrapper === "cmd.exe") {
+        const nested = rest.match(/(?:^|\s)\/c\s+([\s\S]+)$/i)?.[1];
+        if (nested && inspect(nested.replace(/^(['"])([\s\S]*)\1$/, "$2"), depth + 1)) return true;
+      }
+      if (["powershell", "powershell.exe", "pwsh", "pwsh.exe"].includes(wrapper)) {
+        if (/^-(?:encodedcommand|enc)\b/i.test(rest)) return true;
+        const nested = rest.match(/(?:^|\s)-(?:command|c)\s+([\s\S]+)$/i)?.[1];
+        if (nested && inspect(nested.replace(/^(['"])([\s\S]*)\1$/, "$2"), depth + 1)) return true;
+      }
+      return false;
+    }));
+  };
+  const blocked = inspect(command);
   if (blocked) throw new Error(`This command is blocked by Raya configuration: ${blocked}`);
 }
 
@@ -135,7 +171,9 @@ export function createShellTool(config: RayaConfig, policy: ToolExecutionPolicy 
     async execute(_toolCallId, params, signal) {
       assertNotBlocked(params.command, config.blockedCommands);
       assertAllowedInMode(params.command, config.mode);
-      if (requiresShellApproval(params.command)) await policy.confirmDangerousAction?.("run shell command", params.command);
+      if (requiresShellApproval(params.command)) {
+        await requireToolApproval(policy, "run shell command", params.command);
+      }
       const result = await new Promise<ShellDetails>((resolve, reject) => {
         const child = spawn(params.command, {
           cwd: workspace,

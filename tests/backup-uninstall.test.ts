@@ -168,6 +168,20 @@ test("GitHub backups use only temporary clones and list directly from the remote
   writeFileSync(join(home, "USER.md"), "personal memory\n");
   writeFileSync(join(home, ".env"), "RAYA_SECRET=hidden\n");
   writeFileSync(join(home, "auth.json"), "{\"token\":\"hidden\"}\n");
+  writeFileSync(join(home, "config.json"), JSON.stringify({
+    mcpServers: {
+      remote: {
+        transport: "http",
+        url: "https://example.com/mcp",
+        headers: { Authorization: "Bearer literal-secret", Safe: "${SAFE_MCP_HEADER}" }
+      },
+      local: {
+        transport: "stdio",
+        command: "node",
+        env: { API_KEY: "literal-key", SAFE: "${SAFE_MCP_ENV}" }
+      }
+    }
+  }));
   execFileSync("git", ["init", "--bare", remote]);
 
   const config = { mode: "github", name: "remote", repository: remote, configuredAt: new Date().toISOString() };
@@ -188,6 +202,9 @@ test("GitHub backups use only temporary clones and list directly from the remote
   assert.ok(existsSync(join(inspection, ".raya-backup", "raya-home", "USER.md")));
   assert.equal(existsSync(join(inspection, ".raya-backup", "raya-home", ".env")), false);
   assert.equal(existsSync(join(inspection, ".raya-backup", "raya-home", "auth.json")), false);
+  const remoteConfig = JSON.parse(readFileSync(join(inspection, ".raya-backup", "raya-home", "config.json"), "utf8"));
+  assert.deepEqual(remoteConfig.mcpServers.remote.headers, { Safe: "${SAFE_MCP_HEADER}" });
+  assert.deepEqual(remoteConfig.mcpServers.local.env, { SAFE: "${SAFE_MCP_ENV}" });
   assert.match(execFileSync("git", ["log", "-1", "--format=%s"], { cwd: inspection, encoding: "utf8" }), /Raya backup: remote-version/);
 
   writeFileSync(join(home, "config.json"), `${JSON.stringify({ backup: config })}\n`);
@@ -218,14 +235,16 @@ test("legacy local restore remains compatible with the previous snapshots layout
   const script = [
     "import { restoreBackup } from './src/backup/store.ts';",
     `const config = ${config};`,
-    "const runner = async () => ({ code: 0, stdout: '', stderr: '' });",
-    `await restoreBackup(config, '${reference}', runner);`
+    "const calls = []; const runner = async (command, args) => { calls.push([command, args]); return { code: 0, stdout: '', stderr: '' }; };",
+    `await restoreBackup(config, '${reference}', runner);`,
+    "console.log(JSON.stringify(calls));"
   ].join(" ");
-  execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+  const restoreOutput = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
     cwd: process.cwd(), env: { ...process.env, RAYA_HOME: home, RAYA_BACKUP_ROOT: directory }, encoding: "utf8"
   });
   assert.equal(existsSync(join(home, "old.txt")), false);
   assert.equal(readFileSync(join(home, "restored.txt"), "utf8"), "restored\n");
+  assert.match(restoreOutput, /--ignore-scripts/);
 });
 
 test("uninstall removes isolated state and backups without needing valid config", () => {

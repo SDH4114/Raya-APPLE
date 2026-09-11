@@ -15,9 +15,16 @@ const LocalModelSchema = z.object({
   maxTokens: z.number().int().positive().default(8_192)
 });
 
+function isSecureRemoteUrl(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === "https:"
+    || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase()));
+}
+
 const McpCommonSchema = z.object({
   enabled: z.boolean().default(true),
   approval: z.enum(["always", "writes", "never"]).default("writes"),
+  trustReadOnlyAnnotations: z.boolean().default(false),
   timeoutMs: z.number().int().min(1_000).max(300_000).default(30_000),
   toolTimeoutMs: z.number().int().min(1_000).max(600_000).default(120_000)
 });
@@ -32,13 +39,13 @@ const McpStdioServerSchema = McpCommonSchema.extend({
 
 const McpHttpServerSchema = McpCommonSchema.extend({
   transport: z.literal("http"),
-  url: z.string().url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "MCP URL must use http or https"),
+  url: z.string().url().refine(isSecureRemoteUrl, "Remote MCP URLs must use HTTPS; HTTP is allowed only on loopback"),
   headers: z.record(z.string(), z.string()).default({})
 });
 
 const McpSseServerSchema = McpCommonSchema.extend({
   transport: z.literal("sse"),
-  url: z.string().url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "MCP URL must use http or https"),
+  url: z.string().url().refine(isSecureRemoteUrl, "Remote MCP URLs must use HTTPS; HTTP is allowed only on loopback"),
   headers: z.record(z.string(), z.string()).default({})
 });
 

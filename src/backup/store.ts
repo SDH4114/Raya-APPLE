@@ -140,8 +140,59 @@ function copyState(destination: string, includeSecrets: boolean): void {
     }
   });
   if (!includeSecrets) {
-    writeFileSync(join(destination, "SECRETS_NOT_INCLUDED.txt"), "GitHub backups exclude .env and auth.json. Restore credentials with raya login and raya gateway --setup.\n", { mode: 0o600 });
+    sanitizeRemoteMcpCredentials(destination);
+    writeFileSync(
+      join(destination, "SECRETS_NOT_INCLUDED.txt"),
+      "GitHub backups exclude .env, auth.json, and literal MCP headers/environment values. Restore credentials with raya login, raya gateway --setup, and environment placeholders.\n",
+      { mode: 0o600 }
+    );
   }
+}
+
+function placeholderOnly(values: unknown): Record<string, string> {
+  if (!values || typeof values !== "object" || Array.isArray(values)) return {};
+  return Object.fromEntries(Object.entries(values as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^\$\{[A-Z_][A-Z0-9_]*\}$/i.test(entry[1])));
+}
+
+function redactMcpCredentials(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) redactMcpCredentials(item);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.mcpServers && typeof record.mcpServers === "object" && !Array.isArray(record.mcpServers)) {
+    for (const server of Object.values(record.mcpServers as Record<string, unknown>)) {
+      if (!server || typeof server !== "object" || Array.isArray(server)) continue;
+      const config = server as Record<string, unknown>;
+      if ("headers" in config) config.headers = placeholderOnly(config.headers);
+      if ("env" in config) config.env = placeholderOnly(config.env);
+    }
+  }
+  for (const item of Object.values(record)) redactMcpCredentials(item);
+}
+
+function sanitizeRemoteMcpCredentials(root: string): void {
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(path);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      let value: unknown;
+      try {
+        value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      } catch (error) {
+        throw new Error(`GitHub backup refused malformed JSON that could not be safely sanitized: ${path}`, { cause: error });
+      }
+      redactMcpCredentials(value);
+      writePrivateFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
+    }
+  };
+  visit(root);
 }
 
 async function createPackageArchive(destination: string, runner: BackupCommandRunner): Promise<void> {
@@ -478,7 +529,7 @@ async function installSnapshot(snapshot: string, runner: BackupCommandRunner): P
   if (!existsSync(archive)) throw new Error(`Backup is missing Raya package archive: ${archive}`);
   const temporary = mkdtempSync(join(tmpdir(), "raya-restore-npm-"));
   try {
-    const installed = await runner("npm", ["install", "-g", "--cache", join(temporary, "npm-cache"), archive], { stdio: "inherit" });
+    const installed = await runner("npm", ["install", "-g", "--ignore-scripts", "--cache", join(temporary, "npm-cache"), archive], { stdio: "inherit" });
     if (installed.code !== 0) throw new Error(`Could not reinstall Raya from the backup (npm exited ${installed.code}).`);
   } finally {
     rmSync(temporary, { recursive: true, force: true });

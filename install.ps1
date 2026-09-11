@@ -104,7 +104,7 @@ try {
 
   Push-Location $Checkout
   try {
-    Invoke-Checked "npm.cmd" @("ci")
+    Invoke-Checked "npm.cmd" @("ci", "--ignore-scripts")
     Invoke-Checked "npm.cmd" @("run", "build")
     $PackOutput = & npm.cmd pack --ignore-scripts --pack-destination $TemporaryRoot
     if ($LASTEXITCODE -ne 0) { throw "npm pack exited with code $LASTEXITCODE." }
@@ -169,7 +169,7 @@ try {
       $env:RAYA_UPDATE_CHECKPOINT_CREATED = "1"
     }
 
-    Invoke-Checked "npm.cmd" @("install", "-g", $PackagePath)
+    Invoke-Checked "npm.cmd" @("install", "-g", "--ignore-scripts", $PackagePath)
     $NpmPrefix = (& npm.cmd prefix -g).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Could not read npm's global prefix." }
     $RayaCommand = Join-Path $NpmPrefix "raya.cmd"

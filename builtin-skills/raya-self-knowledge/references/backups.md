@@ -44,13 +44,13 @@ Each confirmed update creates a unique local `update-<current>-to-<target>-<time
 
 The checkpoint must finish before the installer starts. The updater passes the exact checked Git SHA as `RAYA_REPO_REF`, marks the completed checkpoint, and gives the installer a disposable temporary `RAYA_HOME`. For older Raya clients that do not pass the checkpoint marker, the installer creates a compatibility checkpoint from the currently installed package and `.raya` before replacement. It also skips state initialization in update mode or whenever existing state is present. Consequently an update does not create, overwrite, migrate, synchronize, or delete any path inside the user's `.raya`. Normal later startup may install a missing built-in skill, but it still preserves every existing user-owned skill folder.
 
-The updater downloads `install.ps1` and runs it through PowerShell on Windows; macOS and Linux continue to use `install.sh` through Bash. Both paths receive the same pinned commit, checkpoint marker, update-mode marker, and disposable `RAYA_HOME`. Windows backup and restore package operations invoke `npm.cmd`, and uninstall recognizes only npm-owned `raya.cmd`/`raya.ps1` shims before removing state.
+The updater downloads `install.ps1` and runs it through PowerShell on Windows; macOS and Linux continue to use `install.sh` through Bash. Both paths receive the same pinned commit, checkpoint marker, update-mode marker, and disposable `RAYA_HOME`. Fresh Unix installation verifies the pinned nvm installer before execution, and every package install/restore disables npm lifecycle scripts. Windows backup and restore package operations invoke `npm.cmd`, and uninstall recognizes only npm-owned `raya.cmd`/`raya.ps1` shims before removing state.
 
 ## GitHub Layout and Lifetime
 
 GitHub mode does not create or retain a repository under `~/raya-backups`. Create, list, and restore each clone the configured repository into a temporary system directory and remove that checkout in a `finally` cleanup path, including when an operation fails.
 
-Raya changes only `.raya-backup` in the remote repository. The remote snapshot contains `raya-source`, `raya-home`, `manifest.json`, and `raya-package.tgz`. `.env` and `auth.json` are excluded, but sessions, memory, configuration, and personality files can still be personal, so the repository should be private.
+Raya changes only `.raya-backup` in the remote repository. The remote snapshot contains `raya-source`, `raya-home`, `manifest.json`, and `raya-package.tgz`. `.env` and `auth.json` are excluded. Literal MCP credentials in JSON `headers` and `env` fields are recursively removed, exact `${ENV_VAR}` references are retained, and malformed JSON aborts the remote backup instead of being copied unsanitized. Sessions, memory, configuration, and personality files can still be personal, so the repository should be private.
 
 GitHub versions are remote Git commits. Listing reads their manifests from remote history; restore checks out the selected commit temporarily and never turns it into a persistent local backup.
 
@@ -60,6 +60,6 @@ The typed `backup` object in `~/.raya/config.json` stores the active mode, displ
 
 ## Restore and Compatibility
 
-`--restore` always asks for the source first. It then resolves the supplied name/reference within that source, asks for `RESTORE`, installs `raya-package.tgz`, and restores state. GitHub restores preserve existing local credentials because remote snapshots intentionally omit them.
+`--restore` always asks for the source first. It then resolves the supplied name/reference within that source, asks for `RESTORE`, installs `raya-package.tgz` with npm lifecycle scripts disabled, and restores state. GitHub restores preserve existing local credentials because remote snapshots intentionally omit them.
 
 New local backups use only the flat named-folder layout. Discovery and restore remain compatible with older `snapshots/<id>` layouts and the earlier local-Git history format; compatibility must not be used when creating new backups.

@@ -1,8 +1,8 @@
 import { Type } from "@earendil-works/pi-ai";
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { RayaTool, ToolExecutionPolicy } from "../types/tool.js";
+import { requireToolApproval, type RayaTool, type ToolExecutionPolicy } from "../types/tool.js";
 import { createFileDiff } from "./file-diff.js";
 
 const ReadFileParameters = Type.Object({
@@ -36,7 +36,8 @@ function readTextBounded(path: string): string {
 }
 
 function isInside(root: string, path: string): boolean {
-  return path === root || path.startsWith(`${root}/`);
+  const child = relative(root, path);
+  return child === "" || (!child.startsWith("..") && !isAbsolute(child));
 }
 
 function workspacePath(root: string, path: string, allowMissing = false): string {
@@ -89,7 +90,7 @@ export function createWriteFileTool(policy: ToolExecutionPolicy = {}, workspace 
     parameters: WriteFileParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      await policy.confirmDangerousAction?.("write file", params.path);
+      await requireToolApproval(policy, "write file", params.path);
       const path = workspacePath(workspace, params.path, true);
       const existed = existsSync(path);
       const before = existed ? readFileSync(path, "utf8") : undefined;

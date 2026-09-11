@@ -22,6 +22,7 @@ test("MCP config is normalized with visible enabled and safety settings", () => 
   });
   assert.equal(config.mcpServers.files?.enabled, true);
   assert.equal(config.mcpServers.files?.approval, "writes");
+  assert.equal(config.mcpServers.files?.trustReadOnlyAnnotations, false);
   assert.equal(config.mcpServers.remote?.enabled, false);
   assert.equal(config.mcpServers.remote?.transport, "http");
   assert.throws(() => normalizeConfig({ mcpServers: { "bad name": { transport: "stdio", command: "node" } } }));
@@ -40,7 +41,8 @@ test("MCP config imports common inferred and type-alias transports", () => {
   assert.equal(config.mcpServers.typed?.transport, "stdio");
   assert.equal(config.mcpServers.remote?.transport, "http");
   assert.equal(config.mcpServers.legacy?.transport, "sse");
-  assert.throws(() => normalizeConfig({ mcpServers: { bad: { url: "file:///tmp/mcp" } } }), /http or https/);
+  assert.throws(() => normalizeConfig({ mcpServers: { bad: { url: "file:///tmp/mcp" } } }), /HTTPS/);
+  assert.throws(() => normalizeConfig({ mcpServers: { bad: { url: "http://example.com/mcp" } } }), /HTTPS/);
 });
 
 test("skill authoring is exposed only in Build mode", () => {
@@ -85,7 +87,7 @@ test("stdio MCP tools, resources, prompts, instructions, and safety work end to 
   try {
     assert.equal(mcp.connectedCount, 1);
     assert.match(mcp.instructions, /deterministic MCP integration tests/);
-    const tools = mcp.createTools(config);
+    const tools = mcp.createTools(config, { confirmDangerousAction: async () => undefined });
     const echo = tools.find((tool) => tool.name === "mcp_test_echo");
     assert.ok(echo);
     const echoResult = await echo.execute("echo", { text: "hello" });
@@ -102,7 +104,10 @@ test("stdio MCP tools, resources, prompts, instructions, and safety work end to 
     const promptResult = await prompts.execute("prompt", { server: "test", name: "welcome", arguments: { name: "Raya" } });
     assert.match(promptResult.content[0]?.type === "text" ? promptResult.content[0].text : "", /Welcome Raya/);
 
-    const planTools = mcp.createTools({ ...config, mode: "plan" });
+    const planTools = mcp.createTools({ ...config, mode: "plan" }, { confirmDangerousAction: async () => undefined });
+    const planEcho = planTools.find((tool) => tool.name === "mcp_test_echo");
+    assert.ok(planEcho);
+    await assert.rejects(() => planEcho.execute("echo", { text: "hello" }), /explicitly trusted as read-only/);
     const mutate = planTools.find((tool) => tool.name === "mcp_test_mutate");
     assert.ok(mutate);
     await assert.rejects(() => mutate.execute("mutate", { value: "x" }), /Switch to Build mode/);
@@ -142,7 +147,7 @@ test("Streamable HTTP MCP servers connect and expose callable tools", async (con
   assert.ok(address && typeof address === "object");
   const config = normalizeConfig({
     mode: "plan",
-    mcpServers: { remote: { transport: "http", url: `http://127.0.0.1:${address.port}/mcp` } }
+    mcpServers: { remote: { transport: "http", url: `http://127.0.0.1:${address.port}/mcp`, trustReadOnlyAnnotations: true } }
   });
   const mcp = await McpRuntime.connect(config, { clientVersion: "test", strict: true });
   try {
@@ -219,7 +224,7 @@ test("Build mode can create a persistent skill and load its references", () => {
     const script = [
       'import { createSkillAuthoringTool } from "./src/tools/skill-authoring.ts";',
       'import { createUseSkillTool } from "./src/tools/skill.ts";',
-      'const created = await createSkillAuthoringTool().execute("create", {',
+      'const created = await createSkillAuthoringTool({ allowWithoutApproval: true }).execute("create", {',
       'name: "release-check", description: "Verify a release. Use before publishing a Raya package.",',
       'instructions: "# Release Check\\n\\nRun checks and report evidence.",',
       'references: [{ filename: "commands.md", content: "# Commands\\n\\nRun the project tests." }] });',

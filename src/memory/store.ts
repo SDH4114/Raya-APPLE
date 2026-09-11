@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { ensureRayaHome, RAYA_USER_MEMORY_PATH } from "../config/paths.js";
 import { writePrivateFileAtomic } from "../storage/atomic-file.js";
 import { DEFAULT_PROFILE, ensureProfile, profilePaths } from "../profiles/store.js";
@@ -10,7 +10,7 @@ export function readMemory(target: MemoryTarget, profile = DEFAULT_PROFILE): str
 export function memorySnapshot(profile = DEFAULT_PROFILE): string {
   ensureRayaHome();
   ensureProfile(profile);
-  for (const target of ["memory", "user"] as MemoryTarget[]) { const path=pathFor(target, profile); if(!existsSync(path))writeFileSync(path,"",{mode:0o600}); }
+  for (const target of ["memory", "user"] as MemoryTarget[]) { const path=pathFor(target, profile); if(!existsSync(path))writePrivateFileAtomic(path,""); }
   return (["memory", "user"] as MemoryTarget[]).map((target) => {
     const text = readMemory(target, profile); return `## ${target === "user" ? "USER PROFILE" : `PROFILE MEMORY (${profile})`} (${text.length}/${LIMITS[target]})\n${text || "(empty)"}`;
   }).join("\n\n");

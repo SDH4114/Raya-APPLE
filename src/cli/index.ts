@@ -32,12 +32,13 @@ import type { ToolExecutionPolicy } from "../types/tool.js";
 import { startScheduler } from "../scheduler/store.js";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { commandInvocation } from "../platform.js";
 import { RAYA_PLUGINS_DIR } from "../config/paths.js";
 import { openApplication, openUrl, runGitShortcut, webSearchUrl, YOUTUBE_HOME_URL, youtubeSearchUrl } from "./shortcuts.js";
 import { normalizePiPackageName } from "../plugins/package.js";
+import { writePrivateFileAtomic } from "../storage/atomic-file.js";
 import { runWebServer } from "../web/server.js";
 import { formatMcpStatusLines, McpRuntime } from "../mcp/client.js";
 import { ensureBuiltinSkills } from "../skills/bootstrap.js";
@@ -209,7 +210,8 @@ async function chooseOptionalProvider(runtime: ReturnType<typeof createProviderR
 }
 
 function buildToolPolicy(config: RayaConfig): ToolExecutionPolicy {
-  if (config.mode !== "build" || config.securityMode === "full") return {};
+  if (config.mode === "build" && config.securityMode === "full") return { allowWithoutApproval: true };
+  if (config.mode !== "build") return {};
   return {
     confirmDangerousAction: async (action, details) => {
       const approved = action === "run shell command" && config.autoApproveCommands.some((command) => commandMatchesAutoApprovePrefix(details, command));
@@ -249,6 +251,15 @@ function assignments(values: string[], label: string): Record<string, string> {
     const separator = value.indexOf("=");
     if (separator <= 0) throw new Error(`${label} must use KEY=VALUE.`);
     return [value.slice(0, separator), value.slice(separator + 1)];
+  }));
+}
+
+function protectMcpValues(serverName: string, kind: "ENV" | "HEADER", values: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => {
+    if (/\$\{[A-Z_][A-Z0-9_]*\}/i.test(value)) return [key, value];
+    const secretName = `RAYA_MCP_${serverName}_${kind}_${key}`.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+    writeSecret(secretName, value);
+    return [key, `\${${secretName}}`];
   }));
 }
 
@@ -299,10 +310,10 @@ async function configureTelegramOnFirstRun(config: RayaConfig, force = false): P
   try {
     const token = (await rl.question("Telegram bot token (optional; press Enter to skip) > ")).trim();
     if (!token) return config;
-    const allowedChatId = (await rl.question("Telegram chat ID to allow (optional; press Enter to allow any chat) > ")).trim();
-    if (allowedChatId && !/^-?\d+$/.test(allowedChatId)) throw new Error("Telegram chat ID must be an integer.");
+    const allowedChatId = (await rl.question("Telegram chat ID to allow (required) > ")).trim();
+    if (!/^-?\d+$/.test(allowedChatId)) throw new Error("Telegram chat ID is required and must be an integer.");
     writeSecret("RAYA_TELEGRAM_BOT_TOKEN", token);
-    writeSecret("RAYA_TELEGRAM_ALLOWED_CHAT_ID", allowedChatId || undefined);
+    writeSecret("RAYA_TELEGRAM_ALLOWED_CHAT_ID", allowedChatId);
     return config;
   } finally {
     rl.close();
@@ -923,6 +934,7 @@ program
   .option("--transport <transport>", "Remote transport: http or sse.", "http")
   .option("--header <KEY=VALUE>", "Repeatable HTTP header. Supports ${ENV_VAR} placeholders.", collectOption, [])
   .option("--approval <mode>", "always, writes, or never", "writes")
+  .option("--trust-read-only", "Trust this server's readOnlyHint annotations in Plan mode.")
   .option("--timeout <ms>", "Connection timeout in milliseconds.", "30000")
   .option("--tool-timeout <ms>", "Tool call timeout in milliseconds.", "120000")
   .option("--disabled", "Add the server in a disabled state.")
@@ -930,7 +942,7 @@ program
     const config = loadConfig();
     const options = commandOptions<{
       command?: string; arg: string[]; cwd?: string; env: string[]; url?: string; header: string[];
-      approval: "always" | "writes" | "never"; timeout: string; toolTimeout: string; transport: "http" | "sse"; disabled?: boolean;
+      approval: "always" | "writes" | "never"; timeout: string; toolTimeout: string; transport: "http" | "sse"; disabled?: boolean; trustReadOnly?: boolean;
     }>(rawOptions);
     if (action === "list") {
       const entries = Object.entries(config.mcpServers);
@@ -978,10 +990,10 @@ program
     const timeoutMs = Number(options.timeout);
     const toolTimeoutMs = Number(options.toolTimeout);
     if (!Number.isInteger(timeoutMs) || !Number.isInteger(toolTimeoutMs)) throw new Error("MCP timeouts must be integer milliseconds.");
-    const common = { enabled: !options.disabled, approval: options.approval, timeoutMs, toolTimeoutMs };
+    const common = { enabled: !options.disabled, approval: options.approval, trustReadOnlyAnnotations: Boolean(options.trustReadOnly), timeoutMs, toolTimeoutMs };
     const server = options.command
-      ? { ...common, transport: "stdio" as const, command: options.command, args: options.arg, ...(options.cwd ? { cwd: options.cwd } : {}), env: assignments(options.env, "--env") }
-      : { ...common, transport: options.transport, url: options.url!, headers: assignments(options.header, "--header") };
+      ? { ...common, transport: "stdio" as const, command: options.command, args: options.arg, ...(options.cwd ? { cwd: options.cwd } : {}), env: protectMcpValues(name, "ENV", assignments(options.env, "--env")) }
+      : { ...common, transport: options.transport, url: options.url!, headers: protectMcpValues(name, "HEADER", assignments(options.header, "--header")) };
     const normalized = normalizeConfig({ ...config, mcpServers: { ...config.mcpServers, [name]: server } });
     updateConfig({ mcpServers: normalized.mcpServers });
     console.log(color(`Saved MCP server ${name} (${server.transport}, ${server.enabled ? "enabled" : "disabled"}).`, theme.green));
@@ -1348,7 +1360,7 @@ program
           console.log("Use /character and choose a personality from the dropdown.");
           return;
         }
-        writeFileSync(profilePaths(config.activeProfile).soul, profile.soul ? `${profile.soul.trimEnd()}\n` : "", { mode: 0o600 });
+        writePrivateFileAtomic(profilePaths(config.activeProfile).soul, profile.soul ? `${profile.soul.trimEnd()}\n` : "");
         console.log(color(`Character: ${profile.label}`, theme.green));
         return rebuildAgent(session);
       }
@@ -1529,7 +1541,7 @@ program
 
     const telegramToken = readSecret("RAYA_TELEGRAM_BOT_TOKEN");
     const telegramChatId = readSecret("RAYA_TELEGRAM_ALLOWED_CHAT_ID");
-    const telegram = telegramToken ? startTelegramService({
+    const telegram = telegramToken && telegramChatId ? startTelegramService({
       token: telegramToken,
       allowedChatId: telegramChatId,
       onStatus: (status) => notifyTui(status === "disconnected"

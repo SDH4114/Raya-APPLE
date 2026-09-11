@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { writePrivateFileAtomic } from "../storage/atomic-file.js";
 import { DEFAULT_SOUL, LEGACY_DEFAULT_SOUL } from "../character/catalog.js";
 
 export const RAYA_HOME = process.env.RAYA_HOME ?? join(homedir(), ".raya");
@@ -21,7 +22,7 @@ export const RAYA_SKILLS_DIR = join(RAYA_HOME, "skills");
 
 export function ensureDefaultSoul(path = RAYA_SOUL_PATH): void {
   if (!existsSync(path) || readFileSync(path, "utf8") === LEGACY_DEFAULT_SOUL) {
-    writeFileSync(path, `${DEFAULT_SOUL.trimEnd()}\n`, { mode: 0o600 });
+    writePrivateFileAtomic(path, `${DEFAULT_SOUL.trimEnd()}\n`);
   }
 }
 

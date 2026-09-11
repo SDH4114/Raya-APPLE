@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { platform } from "node:os";
 import { basename } from "node:path";
 import { promisify } from "node:util";
-import type { RayaTool, ToolExecutionPolicy } from "../types/tool.js";
+import { requireToolApproval, type RayaTool, type ToolExecutionPolicy } from "../types/tool.js";
 
 const execFileAsync = promisify(execFile);
 const AppParameters = Type.Object({
@@ -20,7 +20,7 @@ export function createAppControlTool(policy: ToolExecutionPolicy = {}): RayaTool
     executionMode: "sequential",
     async execute(_id, params) {
       if (!params.target.trim() || params.target.startsWith("-")) throw new Error("Application target must be a non-empty name.");
-      await policy.confirmDangerousAction?.(`${params.action} application`, params.target);
+      await requireToolApproval(policy, `${params.action} application`, params.target);
       const hostPlatform = platform();
       if (params.action === "open") {
         if (hostPlatform === "darwin") await execFileAsync("open", ["-a", params.target]);

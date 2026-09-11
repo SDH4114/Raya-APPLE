@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { loadConfig, updateConfig, type RayaConfig } from "../config/config.js";
 import { readSecret } from "../config/secrets.js";
 import { createRayaAgent } from "../agent/create-agent.js";
@@ -40,6 +41,7 @@ type WebServerOptions = {
 };
 
 const MAX_BODY_BYTES = 512 * 1024;
+const WEB_TOKEN_HEADER = "x-raya-web-token";
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
@@ -76,6 +78,13 @@ function transcript(messages: AgentMessage[]): AgentMessage[] {
   return messages.filter((message) => message.role === "user" || message.role === "assistant");
 }
 
+function tokenMatches(actual: string | undefined, expected: string): boolean {
+  if (!actual) return false;
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
 function listWorkspaceFiles(root: string): Array<{ path: string; type: "file" | "directory"; size?: number }> {
   const realRoot = realpathSync(root);
   const entries: Array<{ path: string; type: "file" | "directory"; size?: number }> = [];
@@ -99,6 +108,23 @@ function listWorkspaceFiles(root: string): Array<{ path: string; type: "file" | 
   return entries;
 }
 
+function workspaceContextPath(root: string, file: "AGENTS.md" | "SOUL.md", allowMissing = false): string {
+  const realRoot = realpathSync(root);
+  const path = join(realRoot, file);
+  if (existsSync(path)) {
+    if (lstatSync(path).isSymbolicLink()) throw new Error(`${file} cannot be a symbolic link.`);
+    const child = relative(realRoot, realpathSync(path));
+    if (child.startsWith("..") || isAbsolute(child)) throw new Error(`${file} escapes the workspace.`);
+  } else if (!allowMissing) {
+    throw Object.assign(new Error(`${file} does not exist.`), { code: "ENOENT" });
+  } else {
+    const parent = realpathSync(dirname(path));
+    const child = relative(realRoot, parent);
+    if (child.startsWith("..") || isAbsolute(child)) throw new Error(`${file} escapes the workspace.`);
+  }
+  return path;
+}
+
 export async function runWebServer(options: WebServerOptions): Promise<void> {
   let config = loadConfig();
   const runtime = createProviderRuntime();
@@ -112,12 +138,16 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
   session.config = { ...session.config, mcpServers: config.mcpServers };
   let queue = Promise.resolve();
   let approval: Approval | undefined;
+  const webToken = randomBytes(32).toString("base64url");
+  let boundPort = options.port ?? 4177;
 
   const token = readSecret("RAYA_TELEGRAM_BOT_TOKEN");
   const chatId = readSecret("RAYA_TELEGRAM_ALLOWED_CHAT_ID");
   let telegram: TelegramService | undefined;
 
-  const policy = (): ToolExecutionPolicy => config.mode !== "build" || config.securityMode === "full" ? {} : {
+  const policy = (): ToolExecutionPolicy => config.mode === "build" && config.securityMode === "full"
+    ? { allowWithoutApproval: true }
+    : config.mode !== "build" ? {} : {
     confirmDangerousAction: (action, details) => new Promise<void>((resolve, reject) => {
       if (approval) return reject(new Error("Another browser approval is already pending."));
       const id = crypto.randomUUID().slice(0, 10);
@@ -136,7 +166,7 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
         }
       };
     })
-  };
+    };
 
   const runPrompt = async (prompt: string, workspace?: string, remotePolicy?: ToolExecutionPolicy): Promise<string> => {
     const model = getConfiguredModel(runtime, session.config.provider, session.config.model);
@@ -165,7 +195,7 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
     return responseText;
   };
 
-  if (token) {
+  if (token && chatId) {
     telegram = startTelegramService({
       token,
       allowedChatId: chatId,
@@ -186,7 +216,12 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
 
   const server = createServer(async (request, response) => {
     try {
-      const host = request.headers.host ?? "127.0.0.1";
+      const host = request.headers.host ?? "";
+      const allowedHosts = new Set([`127.0.0.1:${boundPort}`, `localhost:${boundPort}`]);
+      if (!allowedHosts.has(host.toLowerCase())) {
+        sendJson(response, 403, { error: "Invalid Raya Web host." });
+        return;
+      }
       const url = new URL(request.url ?? "/", `http://${host}`);
       if (request.headers.origin && request.headers.origin !== `http://${host}`) {
         sendJson(response, 403, { error: "Cross-origin requests are not allowed." });
@@ -204,6 +239,12 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
         return;
       }
 
+      if (url.pathname.startsWith("/api/")
+        && !tokenMatches(request.headers[WEB_TOKEN_HEADER] as string | undefined, webToken)) {
+        sendJson(response, 401, { error: "Raya Web access token is missing or invalid." });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/bootstrap") {
         const activeModel = getConfiguredModel(runtime, config.provider, config.model);
         const assistantMessages = session.messages.filter((message) => message.role === "assistant") as Array<{ usage?: { totalTokens?: number } }>;
@@ -216,7 +257,7 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
           activeSessionId: session.id,
           contextTokens,
           contextWindow: activeModel.contextWindow,
-          config,
+          config: { mode: config.mode, provider: config.provider, model: config.model },
           telegram: Boolean(token && chatId)
         });
         return;
@@ -255,7 +296,7 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
         config = { ...config, mode };
         session.config = config;
         if (session.messages.length) saveSession(session);
-        sendJson(response, 200, config);
+        sendJson(response, 200, { mode: config.mode, provider: config.provider, model: config.model });
         return;
       }
 
@@ -334,7 +375,7 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
         if (!workspace) throw new Error("Workspace not found.");
         const file = safeContextFile(url.searchParams.get("file"));
         let content = "";
-        try { content = readFileSync(join(workspace.path, file), "utf8"); } catch (error) {
+        try { content = readFileSync(workspaceContextPath(workspace.path, file), "utf8"); } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         sendJson(response, 200, { file, content });
@@ -355,7 +396,7 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
         const body = await readJson(request);
         const file = safeContextFile(body.file);
         const content = typeof body.content === "string" ? body.content : "";
-        writeFileSync(join(workspace.path, file), content, "utf8");
+        writeFileSync(workspaceContextPath(workspace.path, file, true), content, "utf8");
         sendJson(response, 200, { file, saved: true });
         return;
       }
@@ -399,12 +440,18 @@ export async function runWebServer(options: WebServerOptions): Promise<void> {
   const port = options.port ?? 4177;
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => resolve());
+    server.listen(port, "127.0.0.1", () => {
+      const address = server.address();
+      if (address && typeof address === "object") boundPort = address.port;
+      resolve();
+    });
   });
-  const url = `http://127.0.0.1:${port}`;
-  console.log(`Raya Web running at ${url}`);
+  const url = `http://127.0.0.1:${boundPort}`;
+  const authenticatedUrl = `${url}/#token=${encodeURIComponent(webToken)}`;
+  console.log(`Raya Web running at ${authenticatedUrl}`);
+  console.log("Keep this per-run browser URL private.");
   console.log("Press Ctrl+C to stop.");
-  if (options.open !== false) await openUrl(url);
+  if (options.open !== false) await openUrl(authenticatedUrl);
 
   await new Promise<void>((resolve) => process.once("SIGINT", resolve));
   stopScheduler();

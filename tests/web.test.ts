@@ -12,6 +12,8 @@ test("Raya Web includes every requested application area", () => {
     assert.match(html, new RegExp(label.replace(".", "\\.")));
   }
   assert.match(html, /\[\[Note title\]\]/);
+  assert.match(html, /sessionStorage\.setItem\('raya-web-token'/);
+  assert.match(html, /'x-raya-web-token':webToken/);
 });
 
 test("Raya Web renders the operational multi-pane workspace", () => {

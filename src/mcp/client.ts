@@ -9,7 +9,7 @@ import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Type } from "@earendil-works/pi-ai";
 import type { McpServerConfig, RayaConfig } from "../config/config.js";
 import { commandInvocation } from "../platform.js";
-import type { RayaTool, ToolExecutionPolicy } from "../types/tool.js";
+import { requireToolApproval, type RayaTool, type ToolExecutionPolicy } from "../types/tool.js";
 
 type McpToolDefinition = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
 
@@ -238,13 +238,14 @@ export class McpRuntime {
           parameters,
           executionMode: "sequential",
           async execute(_toolCallId, params, signal) {
-            const readOnly = definition.annotations?.readOnlyHint === true;
+            const readOnly = server.config.trustReadOnlyAnnotations
+              && definition.annotations?.readOnlyHint === true;
             if (config.mode !== "build" && !readOnly) {
-              throw new Error(`MCP tool ${server.name}/${definition.name} is not marked read-only. Switch to Build mode to use it.`);
+              throw new Error(`MCP tool ${server.name}/${definition.name} is not explicitly trusted as read-only. Switch to Build mode or enable trustReadOnlyAnnotations for this server.`);
             }
             const needsApproval = server.config.approval === "always" || (server.config.approval === "writes" && !readOnly);
             if (needsApproval) {
-              await policy.confirmDangerousAction?.("run MCP tool", `${server.name}/${definition.name}\n${JSON.stringify(params, null, 2)}`);
+              await requireToolApproval(policy, "run MCP tool", `${server.name}/${definition.name}\n${JSON.stringify(params, null, 2)}`);
             }
             const response = await server.client.callTool(
               { name: definition.name, arguments: params as Record<string, unknown> },

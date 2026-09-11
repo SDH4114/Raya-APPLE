@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { ensureRayaHome, RAYA_WEB_PATH } from "../config/paths.js";
 import { writePrivateFileAtomic } from "../storage/atomic-file.js";
@@ -63,14 +63,16 @@ function saveWebData(data: WebData): WebData {
 }
 
 export function addWorkspace(name: string, path: string): WebWorkspace {
-  const absolutePath = resolve(path.trim());
-  if (!existsSync(absolutePath)) throw new Error(`Workspace does not exist: ${absolutePath}`);
+  const requestedPath = resolve(path.trim());
+  if (!existsSync(requestedPath)) throw new Error(`Workspace does not exist: ${requestedPath}`);
+  if (!lstatSync(requestedPath).isDirectory()) throw new Error(`Workspace must be a directory: ${requestedPath}`);
+  const absolutePath = realpathSync(requestedPath);
   const data = loadWebData();
   const existing = data.workspaces.find((item) => item.path === absolutePath);
   if (existing) return existing;
   const workspace = WorkspaceSchema.parse({
     id: randomUUID().slice(0, 8),
-    name: name.trim() || absolutePath.split("/").at(-1) || absolutePath,
+    name: name.trim() || basename(absolutePath) || absolutePath,
     path: absolutePath,
     createdAt: Date.now()
   });

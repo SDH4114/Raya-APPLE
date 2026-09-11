@@ -1,6 +1,8 @@
 import { Type } from "@earendil-works/pi-ai";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type { RayaConfig } from "../config/config.js";
 import type { RayaTool } from "../types/tool.js";
 
@@ -43,34 +45,57 @@ export function isPrivateIpAddress(address: string): boolean {
   return true;
 }
 
-async function assertPublicUrl(url: URL): Promise<void> {
+type PublicAddress = { address: string; family: 4 | 6 };
+
+async function resolvePublicUrl(url: URL): Promise<PublicAddress[]> {
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Only http and https URLs are supported.");
+  if (url.username || url.password) throw new Error("URLs containing credentials are not supported.");
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")
     || hostname.endsWith(".internal") || hostname.endsWith(".lan") || (!hostname.includes(".") && isIP(hostname) === 0)) {
     throw new Error("Web requests to local or private hosts are not allowed.");
   }
-  const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true, verbatim: true });
+  const addresses = isIP(hostname)
+    ? [{ address: hostname, family: isIP(hostname) as 4 | 6 }]
+    : await lookup(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some((item) => isPrivateIpAddress(item.address))) {
     throw new Error("Web requests to local or private addresses are not allowed.");
   }
+  return addresses.map((item) => ({ address: item.address, family: item.family as 4 | 6 }));
 }
 
-async function readResponseBody(response: Response, maxChars: number): Promise<string> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
+async function readResponseBody(response: IncomingMessage, maxChars: number): Promise<string> {
   const decoder = new TextDecoder();
   let value = "";
-  try {
-    while (value.length < maxChars) {
-      const { done, value: chunk } = await reader.read();
-      if (done) break;
-      value += decoder.decode(chunk, { stream: true });
+  for await (const chunk of response) {
+    value += decoder.decode(Buffer.from(chunk), { stream: true });
+    if (value.length >= maxChars) {
+      response.destroy();
+      break;
     }
-    value += decoder.decode();
-    return value.slice(0, maxChars);
-  } finally {
-    if (value.length >= maxChars) await reader.cancel().catch(() => undefined);
   }
+  value += decoder.decode();
+  return value.slice(0, maxChars);
+}
+
+function pinnedRequest(url: URL, addresses: PublicAddress[], signal: AbortSignal): Promise<IncomingMessage> {
+  const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const outgoing = request(url, {
+      method: "GET",
+      signal,
+      headers: {
+        "accept-encoding": "identity",
+        "user-agent": "Raya/0.2 (+https://github.com/SDH4114/Raya-APPLE)"
+      },
+      lookup: (_hostname, _options, callback) => {
+        const selected = addresses[0]!;
+        callback(null, selected.address, selected.family);
+      }
+    }, resolve);
+    outgoing.once("error", reject);
+    outgoing.end();
+  });
 }
 
 function stripHtml(html: string): string {
@@ -155,21 +180,20 @@ async function fetchText(url: string, timeoutMs: number, signal?: AbortSignal, m
   try {
     let current = new URL(url);
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      await assertPublicUrl(current);
-      const response = await fetch(current, {
-        signal: controller.signal,
-        redirect: "manual",
-        headers: {
-          "user-agent": "Raya/0.2 (+https://github.com/SDH4114/Raya-APPLE)"
-        }
-      });
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) throw new Error(`HTTP ${response.status} redirect without location`);
+      const addresses = await resolvePublicUrl(current);
+      const response = await pinnedRequest(current, addresses, controller.signal);
+      const status = response.statusCode ?? 0;
+      if (status >= 300 && status < 400) {
+        const location = response.headers.location;
+        response.resume();
+        if (!location) throw new Error(`HTTP ${status} redirect without location`);
         current = new URL(location, current);
         continue;
       }
-      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      if (status < 200 || status >= 300) {
+        response.resume();
+        throw new Error(`HTTP ${status} ${response.statusMessage ?? ""}`.trim());
+      }
       return readResponseBody(response, maxChars);
     }
     throw new Error(`Too many redirects (maximum ${MAX_REDIRECTS}).`);

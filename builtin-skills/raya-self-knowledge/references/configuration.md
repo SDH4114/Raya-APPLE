@@ -6,7 +6,7 @@ Raya uses `~/.raya` by default and honors `RAYA_HOME` for isolation. Resolve exa
 
 - `config.json`: non-secret validated settings.
 - `commands.json`: validated user-created direct commands (`name`, executable, fixed arguments, and optional description/cwd).
-- `.env`: provider and Telegram credentials plus the exact `RAYA_BACKUP_TARGET`, with owner-only permissions.
+- `.env`: provider, Telegram, backup, and CLI-supplied MCP credentials with owner-only permissions (`0600` on Unix and an owner-only ACL on Windows). Writes are atomic and cross-process serialized.
 - `sessions.json`: conversations, workspace/profile binding, and per-session config snapshots.
 - `USER.md`: bounded global user context.
 - `profiles/<name>/SOUL.md`, `AGENTS.md`, `MEMORY.md`, `profile.json`, and `sessions/`: isolated role identity, instructions, durable knowledge, metadata, and readable transcripts.
@@ -34,11 +34,11 @@ Each `mcpServers.<name>` entry contains `enabled`, `approval`, `timeoutMs`, and 
 
 Compatibility normalization accepts `type` as an alias for `transport` and infers stdio from `command` or HTTP from `url`. `${ENV_VAR}` placeholders are expanded at connection time so tokens need not be written into config.
 
-Plan allows only MCP tools explicitly marked read-only. Build permits other MCP tools and applies the server's `approval` setting. Treat annotations as external claims, not proof of safety.
+Plan blocks executable MCP tools by default because server annotations are external claims. After reviewing a server, opt in with `trustReadOnlyAnnotations: true` or `raya mcp add ... --trust-read-only`; Plan then permits only tools carrying `readOnlyHint`. Build permits other MCP tools and applies the server's `approval` setting. Remote MCP URLs require HTTPS, except for loopback development endpoints.
 
 ## Backup State
 
-`raya backup --setup` or the first unconfigured `raya backup` writes non-secret backup metadata through `updateConfig` and the exact local root or Git URL through owner-only `.env` storage. Each new local version is an independent `~/raya-backups/<name>/` folder containing code, `.raya`, `manifest.json`, and `raya-package.tgz` directly at its root. There are no date folders, wrapper folders, or local Git repository, and duplicate names are rejected instead of overwritten. GitHub mode excludes `.env` and `auth.json`, stages only `.raya-backup`, and performs create/list/restore through a temporary clone outside `~/raya-backups` that is always removed afterward. `--list` groups GitHub and Local versions. Restore always asks for the source and requires typed confirmation before reinstalling code and restoring state. Legacy nested local snapshots remain readable and restorable.
+`raya backup --setup` or the first unconfigured `raya backup` writes non-secret backup metadata through `updateConfig` and the exact local root or Git URL through owner-only `.env` storage. Each new local version is an independent `~/raya-backups/<name>/` folder containing code, `.raya`, `manifest.json`, and `raya-package.tgz` directly at its root. There are no date folders, wrapper folders, or local Git repository, and duplicate names are rejected instead of overwritten. GitHub mode excludes `.env` and `auth.json`, recursively removes literal MCP header/environment credentials from JSON, preserves only exact `${ENV_VAR}` references, stages only `.raya-backup`, and performs create/list/restore through a temporary clone outside `~/raya-backups` that is always removed afterward. Malformed JSON aborts remote backup rather than risking an unsanitized copy. `--list` groups GitHub and Local versions. Restore always asks for the source, requires typed confirmation, and installs the archived package with lifecycle scripts disabled before restoring state. Legacy nested local snapshots remain readable and restorable.
 
 `raya update` does not depend on or change the configured backup mode. After update confirmation it always creates a local checkpoint under the backup root, then launches the pinned installer with a temporary `RAYA_HOME`. Loading the update command itself must also avoid config normalization, profile migration, skill synchronization, and custom-command initialization so malformed or hand-edited state remains untouched.
 

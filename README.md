@@ -9,7 +9,9 @@ Raya supports **OpenAI Codex via ChatGPT Plus/Pro/Codex OAuth**, API-key provide
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.ps1 | iex
+$installer = Join-Path $env:TEMP "raya-install.ps1"
+irm https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.ps1 -OutFile $installer
+& $installer
 ```
 
 The Windows installer uses Node.js 22+ and Git already on the machine, or installs missing prerequisites through `winget`. It builds and packs Raya, installs the package globally, adds npm's global command directory to the user `PATH`, and exposes `raya.cmd` in the current PowerShell session. Windows Terminal is recommended for the complete interactive TUI.
@@ -17,10 +19,11 @@ The Windows installer uses Node.js 22+ and Git already on the machine, or instal
 macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.sh -o /tmp/raya-install.sh
+bash /tmp/raya-install.sh
 ```
 
-The Unix installer installs Node.js 22 with `nvm` if needed. Both installers download the repository, build it, pack it, install Raya globally, preserve an existing `RAYA_HOME`, and make the command available on `PATH`. This GitHub-source approach works before the npm package is published. After publishing `@sdh4114/raya`, the equivalent install on every platform is:
+The Unix installer installs Node.js 22 with a commit-pinned, SHA-256-verified `nvm` bootstrap when needed. Both installers disable npm lifecycle scripts during dependency and global installation, download the repository into a temporary directory, build and pack Raya, preserve an existing `RAYA_HOME`, and make the command available on `PATH`. Downloading the installer first also lets you inspect it before execution. This GitHub-source approach works before the npm package is published. After publishing `@sdh4114/raya`, the equivalent install on every platform is:
 
 ```bash
 npm install -g @sdh4114/raya
@@ -251,7 +254,7 @@ Every ordinary `raya` launch starts with a transient empty session bound to the 
 
 Raya can autonomously write global user preferences to `USER.md` and profile-specific durable facts to the active profile's `MEMORY.md` through her memory tool. `src/memory/skill.ts` remains an extension hook for optional post-session consolidation beyond the built-in model-driven behavior.
 
-Set `RAYA_HOME=/path` to move config, OAuth credentials, sessions, and memory. Default model and mode are configured with `raya config --model <model> --mode plan|build`. OAuth credentials and Telegram tokens are stored with owner-only permissions in `~/.raya/.env`, separate from non-sensitive configuration.
+Set `RAYA_HOME=/path` to move config, OAuth credentials, sessions, and memory. Default model and mode are configured with `raya config --model <model> --mode plan|build`. OAuth credentials, API keys, Telegram tokens, backup targets, and literal MCP header/environment values added through the CLI are stored in owner-only `~/.raya/.env`; writes are atomic and serialized across processes. On Windows, Raya also applies an owner-only ACL.
 
 ## Backup, rollback, and uninstall
 
@@ -270,7 +273,7 @@ raya backup --local "before-upgrade"
 raya backup --github https://github.com/owner/private-raya-backups.git
 ```
 
-Every local version is one independent folder at `~/raya-backups/<backup-name>/`. Raya's code, `.raya`, `manifest.json`, and `raya-package.tgz` are stored directly inside it: no date folder, `snapshots`, `snapshot`, `backups`, `raya-source`, `raya-home`, or local Git repository is added. Later versions are sibling folders under `~/raya-backups`; an existing name is never overwritten. GitHub snapshots commit only `.raya-backup` inside the selected repository and deliberately exclude `.env` and `auth.json`. Raya clones that repository into a temporary system directory for create, list, or restore and removes the checkout afterward, so GitHub backups are not retained under `~/raya-backups`. Use a private repository because sessions, memory, and other personal state may still be sensitive. `raya backup --list` shows separate **GitHub backups** and **Local backups** sections with the name, Raya version, creation time, and restore command. Restore always asks which source to use, requires typing `RESTORE`, reinstalls the saved package, and restores state. Backup metadata is merged into `~/.raya/config.json`; the exact local root or Git URL is also stored with owner-only permissions as `RAYA_BACKUP_TARGET` in `~/.raya/.env`. The misspelled `raya bakcup` remains an alias for convenience.
+Every local version is one independent folder at `~/raya-backups/<backup-name>/`. Raya's code, `.raya`, `manifest.json`, and `raya-package.tgz` are stored directly inside it: no date folder, `snapshots`, `snapshot`, `backups`, `raya-source`, `raya-home`, or local Git repository is added. Later versions are sibling folders under `~/raya-backups`; an existing name is never overwritten. GitHub snapshots commit only `.raya-backup` inside the selected repository and deliberately exclude `.env`, `auth.json`, and literal MCP header/environment values while retaining safe `${ENV_VAR}` placeholders. Raya clones that repository into a temporary system directory for create, list, or restore and removes the checkout afterward, so GitHub backups are not retained under `~/raya-backups`. Use a private repository because sessions, memory, and other personal state may still be sensitive. `raya backup --list` shows separate **GitHub backups** and **Local backups** sections with the name, Raya version, creation time, and restore command. Restore always asks which source to use, requires typing `RESTORE`, reinstalls the saved package with lifecycle scripts disabled, and restores state. Backup metadata is merged into `~/.raya/config.json`; the exact local root or Git URL is also stored with owner-only permissions as `RAYA_BACKUP_TARGET` in `~/.raya/.env`. The misspelled `raya bakcup` remains an alias for convenience.
 
 `raya uninstall` is the complete local removal command. It requires typing `UNINSTALL`, uninstalls `@sdh4114/raya`, removes installer-created Raya launchers, deletes `RAYA_HOME`, and deletes `~/raya-backups`. Use `raya uninstall --keep-backups` to preserve backups. It does not delete Node.js, unrelated developer source repositories, or a remote GitHub backup repository.
 
@@ -335,7 +338,7 @@ raya mcp add legacy --url https://mcp.example.com/sse --transport sse
 raya mcp test legacy
 ```
 
-Raya also normalizes common MCP JSON copied from other clients: `type` may be used instead of `transport`, and a missing transport is inferred as `stdio` from `command` or `http` from `url`. URL transports are restricted to HTTP(S). Environment placeholders work in commands, arguments, paths, environment values, URLs, and headers.
+Raya also normalizes common MCP JSON copied from other clients: `type` may be used instead of `transport`, and a missing transport is inferred as `stdio` from `command` or `http` from `url`. Remote MCP endpoints must use HTTPS; plain HTTP is accepted only on loopback. Environment placeholders work in commands, arguments, paths, environment values, URLs, and headers. Literal `--header` and `--env` values are automatically moved to owner-only secret storage.
 
 Manage configured servers:
 
@@ -358,6 +361,7 @@ Servers are stored visibly under `mcpServers` in `~/.raya/config.json`:
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/project"],
       "env": {},
       "approval": "writes",
+      "trustReadOnlyAnnotations": false,
       "timeoutMs": 30000,
       "toolTimeoutMs": 120000
     },
@@ -367,6 +371,7 @@ Servers are stored visibly under `mcpServers` in `~/.raya/config.json`:
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer ${MY_MCP_TOKEN}" },
       "approval": "writes",
+      "trustReadOnlyAnnotations": false,
       "timeoutMs": 30000,
       "toolTimeoutMs": 120000
     }
@@ -374,7 +379,7 @@ Servers are stored visibly under `mcpServers` in `~/.raya/config.json`:
 }
 ```
 
-`approval` may be `always`, `writes` (default), or `never`. Plan mode only permits MCP tools that the server marks read-only. In Standard Build mode, tools not marked read-only ask for the normal Raya approval unless the server is configured with `approval: "never"`. Full access skips interactive approvals. A server that fails to connect is reported once and does not prevent Raya or the other MCP servers from starting. `raya mcp test <name>` is strict: it returns a failing exit status and closes any other connection opened during the diagnostic.
+`approval` may be `always`, `writes` (default), or `never`. Server-supplied read-only annotations are untrusted by default, so Plan blocks all executable MCP tools. Enable them for a server only after review with `--trust-read-only` or `trustReadOnlyAnnotations: true`; unannotated tools remain Build-only. In Standard Build mode, tools that are not explicitly trusted read-only follow the normal approval policy. Full access is the only explicit approval bypass. A server that fails to connect is reported once and does not prevent Raya or the other MCP servers from starting. `raya mcp test <name>` is strict: it returns a failing exit status and closes any other connection opened during the diagnostic.
 
 ## Subagents and pi packages
 
@@ -397,7 +402,7 @@ The `schedule` tool stores one-time and daily tasks in `~/.raya/scheduled.json`.
 
 ## Raya Web
 
-Run `raya web` to open the full local application at `http://127.0.0.1:4177`. Use `raya web --port <port>` to choose another port or `raya web --no-open` to start without opening the browser. The server binds only to localhost.
+Run `raya web` to open the full local application on `127.0.0.1`. Use `raya web --port <port>` to choose another port or `raya web --no-open` to start without opening the browser. Each run generates an unpredictable browser access token in the URL fragment; API calls require it, Host and Origin are checked, and the token is removed from the address bar into tab-scoped storage.
 
 Raya Web includes the existing agent and session workflow plus Calendar, Reminders, Scheduled tasks, Workspaces, and connected Notes. Each registered workspace folder can edit its own `AGENTS.md` and `SOUL.md`; selecting that workspace gives the chat agent the matching folder context and filesystem root. Notes create bidirectional graph links with `[[Note title]]`. Web data is kept in `~/.raya/web.json` with owner-only permissions.
 
@@ -409,7 +414,7 @@ Create a bot with [@BotFather](https://t.me/BotFather), copy its token, then ent
 
 Use `raya gateway --setup` to change the bot token or allowed chat ID. `raya gateway --start` starts the local Telegram gateway, useful when the TUI is not running. `raya gateway --restart` starts it again with a fresh Telegram connection.
 
-For a safer remote path, every dangerous tool action requested from Telegram—shell mutation, writing a file, or closing an application—waits for an inline **Approve** or **Deny** button in the Telegram chat. The action does not proceed on timeout or denial. Set an allowed chat ID during setup to restrict who can talk to the running session; otherwise anyone who knows the bot can send read-only requests, so an allowed chat ID is strongly recommended.
+Every dangerous tool action requested from Telegram—shell mutation, writing a file, or closing an application—waits for an inline **Approve** or **Deny** button. The action does not proceed on timeout or denial, and only the same Telegram user who initiated the request may use its approval button. An allowed chat ID is mandatory; messages from every other chat are ignored.
 
 ## Architecture
 

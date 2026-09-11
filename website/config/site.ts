@@ -6,9 +6,9 @@ export const siteConfig = {
   issues: "https://github.com/SDH4114/Raya-APPLE/issues",
   license: "https://github.com/SDH4114/Raya-APPLE/blob/prime/LICENSE",
   installScript: "https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.sh",
-  installCommand: "curl -fsSL https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.sh | bash",
+  installCommand: "curl -fsSL https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.sh -o /tmp/raya-install.sh && bash /tmp/raya-install.sh",
   windowsInstallScript: "https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.ps1",
-  windowsInstallCommand: "irm https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.ps1 | iex",
+  windowsInstallCommand: "$p = Join-Path $env:TEMP 'raya-install.ps1'; irm https://raw.githubusercontent.com/SDH4114/Raya-APPLE/prime/install.ps1 -OutFile $p; & $p",
   telegram: null,
   telegramChannel: "https://t.me/BreakRulesStudio"
 } as const;

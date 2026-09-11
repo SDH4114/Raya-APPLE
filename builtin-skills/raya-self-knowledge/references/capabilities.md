@@ -12,8 +12,8 @@
 - Platforms: Windows, macOS, and Linux are supported. Windows installation and updates use `install.ps1` in PowerShell; host-native command, URL, application, clipboard, npm launcher, process-tree, backup, restore, and uninstall paths are selected at runtime.
 - Backups: `raya backup --setup` chooses local or GitHub storage, plain `raya backup` creates a named version, and `--list` prints separate GitHub/Local tables with names, Raya versions, dates, and restore commands. Restore always asks which source to use, then reinstalls the archived package and state after `RESTORE` confirmation. Every local version is a sibling `~/raya-backups/<name>/` folder with code, `.raya`, manifest, and package archive directly inside; no date, snapshot, wrapper, or Git directory is added. Previous nested local snapshots remain compatible. GitHub operations use throwaway clones and keep no persistent local copy. `--local <name>` configures local mode and creates that named backup; `--github` provides explicit repository setup; `bakcup` is a typo-compatible alias. Read [backups.md](backups.md) for the complete storage and lifecycle contract.
 - Uninstall: `raya uninstall` removes the global package, exact Raya launchers, `RAYA_HOME`, and normally `~/raya-backups` only after `UNINSTALL`; `--keep-backups` preserves local backup history. It never deletes a remote GitHub repository.
-- Raya Web: local multi-pane chat, workspaces, AGENTS.md and SOUL.md editing, calendar, reminders, scheduled work, and linked notes.
-- Telegram: local long-polling gateway with chat restriction and inline approval for consequential remote actions.
+- Raya Web: loopback-only multi-pane chat, workspaces, AGENTS.md and SOUL.md editing, calendar, reminders, scheduled work, and linked notes. Every API request requires a random per-run token and strict Host/Origin validation; bootstrap exposes only the active mode, provider, and model.
+- Telegram: local long-polling gateway requiring an allowed chat ID. Consequential actions use inline approval bound to both that chat and the user who initiated the request.
 - Scheduler: persistent one-time and daily reminders delivered through the configured interface path.
 - Subagents: bounded isolated agent work that inherits the current mode, model runtime, workspace policy, and connected MCP runtime.
 
@@ -41,7 +41,7 @@ The authoritative list is `createDefaultTools` in `src/tools/index.ts`; mode and
 - Standard security asks before consequential Build actions. Full security suppresses the interactive approval step.
 - `blockedCommands`, path containment, private-network checks, credential separation, package validation, and atomic persistence are defense-in-depth controls.
 - Raya is not an OS sandbox. Shell and filesystem tools run with the local user's permissions.
-- GitHub backups exclude `.env` and `auth.json`, touch only `.raya-backup` in the chosen repository, and should still use a private repository because other Raya state can be personal.
+- GitHub backups exclude `.env` and `auth.json`, remove literal MCP header/environment credentials from JSON while preserving exact environment placeholders, abort on malformed JSON, touch only `.raya-backup` in the chosen repository, and should still use a private repository because other Raya state can be personal.
 
 ## Honest Limits
 
@@ -49,5 +49,7 @@ The authoritative list is `createDefaultTools` in `src/tools/index.ts`; mode and
 - Web research is text search/fetch, not full browser automation.
 - Provider/model quality and tool-calling support vary.
 - External MCP servers remain separate trust domains and can fail, return untrusted content, or mislabel mutating tools.
+- Remote MCP endpoints require HTTPS except on loopback. Plan ignores `readOnlyHint` unless that server was explicitly trusted.
+- Owner-only secret files protect against other local accounts and accidental publication, but they are not an operating-system keychain and remain readable to the same OS account.
 - Native Pi extensions do not run without an adapter.
 - Supported hosts are Windows, macOS, and Linux with Node.js 22 or newer. Windows Terminal is recommended for the complete TUI experience; automatic Windows prerequisite installation additionally requires `winget`.
